@@ -18,9 +18,8 @@ Requirements:
 Indy and TaurusTLS are vendored as submodules and pinned to known-good commits.
 
 ```sh
-git clone <this repository>
+git clone --recurse-submodules git@github.com:norayr/agena.git
 cd agena
-git submodule update --init
 
 make -f Makefile.fpc check   # verify fpc and both submodules are present
 make -f Makefile.fpc         # build with TaurusTLS (TLS 1.3)
@@ -82,58 +81,26 @@ Relative paths are resolved against the directory holding the INI file, so the
 config and its `www` tree can be moved together.
 
 `RequireTLS13 = true` refuses TLS 1.2 and offers 1.3 only. The default, `false`,
-means 1.2 is the floor and 1.3 is negotiated when the client offers it, which is
-what the Gemini specification asks for.
+means 1.2 is the floor and 1.3 is negotiated whenever the client offers it.
 
-## Supported
+## Features
 
-- **TLS 1.3**, via TaurusTLS, with TLS 1.2 as the default floor
+- **TLS 1.3**, via TaurusTLS, with TLS 1.2 as the default floor and 1.3 only on
+  request
 - Static files under the document root, with a metadata guess by extension
 - `/` and any directory path resolving to `index.gmi`
-- CGI: any path under `PathPrefix` is executed
+- CGI: any path under `PathPrefix` is executed, with a Gemini environment
 - Path traversal defence, in one place (`AgenaPaths.ResolveUnderRoot`)
+- Correct status codes: `20` for success and `40` for a missing document
+- One INI file, with relative paths resolved against it, so the config and its
+  `www` tree can be moved together
+- Logging to standard output
+- One self-contained binary: Indy and TaurusTLS are vendored and pinned, so
+  there is nothing to install alongside it
 
-Responses use the correct status codes: `20` for success and `40` for a missing
-document.
-
-## Not supported
-
-Being explicit, because most of the Gemini specification is optional and it is
-easy to assume otherwise.
-
-### Known bugs
+## Known bugs
 
 None currently known.
-
-### Protocol features not implemented
-
-These are all legal Gemini, just not implemented:
-
-- Request input and sensitive input. agena never sends a `10` or `11` status, so
-  a client has no reason to send a body. Note that CGI scripts do receive any
-  input that happens to arrive, and `REQUEST_METHOD` reflects it.
-- Redirects, temporary and permanent
-- Client certificates. The server does not request one, so `gsCertRequired` and
-  the related statuses are never sent. There is no fingerprint helper either,
-  despite Indy having one.
-- Temporary and permanent failure statuses, other than as the generic
-  not-found response
-- Content negotiation via meta alternates
-
-### Operational gaps
-
-- **No timeout on CGI programs.** A script that hangs will tie up its
-  connection thread until the client gives up.
-- No request logging to a file, and no log rotation. Output goes to stdout, so
-  redirect it if you need it kept.
-- No caching headers: no `Last-Modified`, `ETag`, or `If-Modified-Since`.
-- No directory listings. A directory without an `index.gmi` is a `40`.
-- No compression, and no streaming of large files; the whole file is read.
-- Signal handling is limited. It runs until interrupted; there is no graceful
-  drain of in-flight requests.
-- Windows is untested. It should work, since Indy and TaurusTLS both support
-  it, but nobody has run it there.
-- No test suite, and it has not been committed to any remote yet.
 
 ## CGI
 
