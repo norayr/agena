@@ -88,56 +88,56 @@ begin
   P := TProcess.Create(nil);
   OutLines := TStringList.Create;
   try
+    P.Executable := Script;
+    P.CurrentDirectory := ADocumentRoot;
+    { poUsePipes gives us both the stdout pipe we read and the stdin pipe we
+      hand the request input to. }
+    P.Options := [poUsePipes];
+
+    { The environment list belongs to P: TProcess.Destroy frees it, and the
+      property refuses to be set to nil, so it must not be freed here. }
+    P.Environment := TStringList.Create;
+    P.Environment.Add('SERVER_PROTOCOL=GEMINI');
+    P.Environment.Add('SERVER_SOFTWARE=agena');
+    P.Environment.Add('SERVER_NAME=' + ServerNameFor(AContext));
+    P.Environment.Add('SERVER_PORT=' +
+      IntToStr(AContext.Connection.Socket.Binding.Port));
+    P.Environment.Add('REQUEST_METHOD=' +
+      BoolToStr(InputData <> '', 'POST', 'GET'));
+    P.Environment.Add('SCRIPT_NAME=' + AScriptPath);
+    P.Environment.Add('SCRIPT_FILENAME=' + Script);
+    P.Environment.Add('PATH_INFO=' + AScriptPath);
+    P.Environment.Add('QUERY_STRING=' + AQuery);
+    P.Environment.Add('GEMINI_URL=' + ARawURL);
+    P.Environment.Add('REMOTE_ADDR=' + AContext.Connection.Socket.Binding.PeerIP);
+    P.Environment.Add('CONTENT_LENGTH=' + IntToStr(Length(InputData)));
+    P.Environment.Add('DOCUMENT_ROOT=' + ADocumentRoot);
+
     try
-      P.Executable := Script;
-      P.CurrentDirectory := ADocumentRoot;
-      { poUsePipes gives us both the stdout pipe we read and the stdin pipe
-        we hand the request input to. }
-      P.Options := [poUsePipes];
+      P.Execute;
 
-      P.Environment := TStringList.Create;
-      try
-        P.Environment.Add('SERVER_PROTOCOL=GEMINI');
-        P.Environment.Add('SERVER_SOFTWARE=agena');
-        P.Environment.Add('SERVER_NAME=' + ServerNameFor(AContext));
-        P.Environment.Add('SERVER_PORT=' +
-          IntToStr(AContext.Connection.Socket.Binding.Port));
-        P.Environment.Add('REQUEST_METHOD=' +
-          BoolToStr(InputData <> '', 'POST', 'GET'));
-        P.Environment.Add('SCRIPT_NAME=' + AScriptPath);
-        P.Environment.Add('SCRIPT_FILENAME=' + Script);
-        P.Environment.Add('PATH_INFO=' + AScriptPath);
-        P.Environment.Add('QUERY_STRING=' + AQuery);
-        P.Environment.Add('GEMINI_URL=' + ARawURL);
-        P.Environment.Add('REMOTE_ADDR=' +
-          AContext.Connection.Socket.Binding.PeerIP);
-        P.Environment.Add('CONTENT_LENGTH=' + IntToStr(Length(InputData)));
-        P.Environment.Add('DOCUMENT_ROOT=' + ADocumentRoot);
-
-        P.Execute;
-
-        if (InputData <> '') and (P.Input <> nil) then
-        begin
+      { Always close stdin, whether or not there was input. A script that
+        reads stdin would otherwise wait for a close that never comes. }
+      if P.Input <> nil then
+      begin
+        if InputData <> '' then
           P.Input.WriteBuffer(InputData[1], Length(InputData));
-          P.CloseInput;
-        end;
+        P.CloseInput;
+      end;
 
-        { Drain stdout before waiting.  Waiting first would deadlock as soon
-          as a script writes more than the pipe buffer holds. }
-        if P.Output <> nil then
-          OutLines.LoadFromStream(P.Output);
+      { Drain stdout before waiting.  Waiting first would deadlock as soon as
+        a script writes more than the pipe buffer holds. }
+      if P.Output <> nil then
+        OutLines.LoadFromStream(P.Output);
 
-        { FPC spells this WaitOnExit; it also has a timeout overload. }
-        P.WaitOnExit;
+      { FPC spells this WaitOnExit; it also has a timeout overload. }
+      P.WaitOnExit;
 
-        if P.ExitCode <> 0 then
-        begin
-          LogLine(Format('cgi %s exited with %d', [Script, P.ExitCode]));
-          Fail(Status, Meta, Response, '# cgi error' + LineEnding);
-          Exit;
-        end;
-      finally
-        P.Environment.Free;
+      if P.ExitCode <> 0 then
+      begin
+        LogLine(Format('cgi %s exited with %d', [Script, P.ExitCode]));
+        Fail(Status, Meta, Response, '# cgi error' + LineEnding);
+        Exit;
       end;
 
       Body := OutLines.Text;
@@ -154,6 +154,10 @@ begin
           Meta := Trim(Copy(FirstLine, Length(CONTENT_TYPE_HEADER) + 1,
             Length(FirstLine)));
           Delete(Body, 1, Eol + Length(LineEnding) - 1);
+          { CGI separates the headers from the body with a blank line, so drop
+            that too rather than leaving it at the top of the gemtext. }
+          if Copy(Body, 1, Length(LineEnding)) = LineEnding then
+            Delete(Body, 1, Length(LineEnding));
         end;
       end;
 
