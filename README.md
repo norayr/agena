@@ -101,20 +101,17 @@ document.
 Being explicit, because most of the Gemini specification is optional and it is
 easy to assume otherwise.
 
-### Known bug
+### Known bugs
 
-- **CGI responses are not delivered.** The script is executed correctly and its
-  output is read, but the response body never reaches the client. Static
-  requests are unaffected, so the response path works in general and the fault
-  is specific to the CGI branch. Do not rely on CGI yet.
+None currently known.
 
 ### Protocol features not implemented
 
 These are all legal Gemini, just not implemented:
 
-- Request input and sensitive input. agena never sends a `10` or `11` status.
-  Note that CGI scripts do receive any input that happens to arrive, and
-  `REQUEST_METHOD` reflects it.
+- Request input and sensitive input. agena never sends a `10` or `11` status, so
+  a client has no reason to send a body. Note that CGI scripts do receive any
+  input that happens to arrive, and `REQUEST_METHOD` reflects it.
 - Redirects, temporary and permanent
 - Client certificates. The server does not request one, so `gsCertRequired` and
   the related statuses are never sent. There is no fingerprint helper either,
@@ -141,11 +138,14 @@ These are all legal Gemini, just not implemented:
 ## CGI
 
 A request whose path starts with `PathPrefix` is run as a program under the
-document root. It must be executable and have a working shebang.
+document root. It must be executable, and it either needs a working shebang or
+has to be a compiled binary.
 
 Standard output is the response body. If the first line is a
 `Content-Type: ...` header it is used as the response metadata and stripped
-from the body; otherwise the metadata defaults to `text/gemini`.
+along with the blank line that follows it; otherwise the metadata defaults to
+`text/gemini`. Standard input is always closed once any input has been passed
+on, so a script is free to read it to the end without blocking.
 
 The environment includes the usual CGI names, plus Gemini-specific ones:
 
@@ -161,8 +161,14 @@ The environment includes the usual CGI names, plus Gemini-specific ones:
 | `SCRIPT_FILENAME` | resolved script path |
 | `DOCUMENT_ROOT` | the configured document root |
 
-`www/cgi-bin/hello.py` is a worked example. It echoes back the query string and
-shows what the environment looks like.
+Two worked examples ship in `www/cgi-bin`. `hello.py` has a shebang and runs as
+is; it echoes back the query string and shows what the environment looks like.
+`hello.pas` shows the same thing without needing an interpreter, and is compiled
+into place:
+
+```sh
+fpc -O2 -o www/cgi-bin/hello www/cgi-bin/hello.pas
+```
 
 Note that agena sets the environment explicitly rather than inheriting its own,
 so a script that needs `PATH` or `HOME` will not find them. Add them to the

@@ -2,3 +2,6 @@ build/
 *.pem
 *.ppu
 *.o
+
+# CGI examples are compiled in place
+www/cgi-bin/hello
