@@ -5,7 +5,11 @@ unit AgenaCGI;
 interface
 
 uses
-  Classes, IdContext, IdGemini, IdGeminiServer;
+  Classes, IdContext, IdGemini, IdGeminiServer
+{$IFDEF UNIX}
+  , BaseUnix
+{$ENDIF}
+  ;
 
 { Runs the program named by AScriptPath under ADocumentRoot and makes its
   standard output the response body.
@@ -53,12 +57,13 @@ begin
     Result := 'localhost';
 end;
 
-procedure Fail(out Status: TGeminiStatus; out Meta: string; var Response: TStream;
-  const Msg: string);
+{ Marks a temporary failure.  There is deliberately no body here: a Gemini
+  response that is not 20 carries no body, and the transport drops one that is
+  written, so anything worth saying goes to the log instead. }
+procedure Fail(out Status: TGeminiStatus; out Meta: string);
 begin
   Status := gsTempFailure;
   Meta := 'text/gemini; charset=utf-8';
-  TIdGeminiServer.WriteStringToStream(Response, Msg, TEncoding.UTF8);
 end;
 
 procedure RunAgenaCGI(AContext: TIdContext; const ADocumentRoot, ARawURL,
@@ -76,14 +81,25 @@ begin
   Script := ResolveUnderRoot(ADocumentRoot, AScriptPath);
   if Script = '' then
   begin
-    Status := gsTempFailure;
-    Meta := 'text/gemini; charset=utf-8';
-    TIdGeminiServer.WriteStringToStream(Response, '# no such script' + LineEnding,
-      TEncoding.UTF8);
+    LogLine('cgi ' + AScriptPath + ': no such script under the document root');
+    Fail(Status, Meta);
     Exit;
   end;
 
   InputData := TakeRequestInput(AContext);
+
+  { A script has to be executable: either a compiled binary, or a source file
+    with a shebang and the execute bit set.  This is checked up front because a
+    process that fails to start can otherwise be indistinguishable from one that
+    ran and printed nothing, which would be reported as an empty success. }
+  {$IFDEF UNIX}
+  if fpAccess(Script, X_OK) <> 0 then
+  begin
+    LogLine(Format('cgi %s is not executable', [Script]));
+    Fail(Status, Meta);
+    Exit;
+  end;
+  {$ENDIF}
 
   P := TProcess.Create(nil);
   OutLines := TStringList.Create;
@@ -130,13 +146,22 @@ begin
       if P.Output <> nil then
         OutLines.LoadFromStream(P.Output);
 
-      { FPC spells this WaitOnExit; it also has a timeout overload. }
-      P.WaitOnExit;
+      { FPC spells this WaitOnExit; it also has a timeout overload.  A False
+        result means the program never ran, which is not the same as a program
+        that ran and failed: a source file without a compiled binary, or one
+        whose interpreter is missing, produces no output at all and no exit
+        code, and reporting that as an empty success would be a lie. }
+      if not P.WaitOnExit then
+      begin
+        LogLine(Format('cgi %s could not be run', [Script]));
+        Fail(Status, Meta);
+        Exit;
+      end;
 
       if P.ExitCode <> 0 then
       begin
         LogLine(Format('cgi %s exited with %d', [Script, P.ExitCode]));
-        Fail(Status, Meta, Response, '# cgi error' + LineEnding);
+        Fail(Status, Meta);
         Exit;
       end;
 
@@ -167,7 +192,7 @@ begin
       on E: Exception do
       begin
         LogLine('cgi ' + Script + ': ' + E.Message);
-        Fail(Status, Meta, Response, '# cgi failure' + LineEnding);
+        Fail(Status, Meta);
       end;
     end;
   finally
