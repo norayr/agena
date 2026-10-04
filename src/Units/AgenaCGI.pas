@@ -187,7 +187,7 @@ begin
       end;
 
       Status := gsSuccess;
-      TIdGeminiServer.WriteStringToStream(Response, Body, TEncoding.UTF8);
+      WriteStringToStream(Response, Body, IndyTextEncoding_UTF8);
     except
       on E: Exception do
       begin
