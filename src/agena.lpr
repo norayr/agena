@@ -12,9 +12,9 @@ uses
   cthreads,
   {$ENDIF}
   SysUtils, Classes, IdGlobal, IdSocketHandle, IdContext, IdTCPServer, IdSSL,
-  IdSSLOpenSSL, IdGemini, IdGeminiServer, AgenaConfig, AgenaLog, AgenaServer,
+  IdSSLOpenSSL, IdSSLOpenSSLHeaders, IdGemini, IdGeminiServer, AgenaConfig, AgenaLog, AgenaServer
   {$IFDEF USE_TAURUS}
-  TaurusTLS
+  , TaurusTLS
   {$ENDIF};
 
 procedure ExplainMissingCertificate(const Config: TAgenaConfig);
@@ -28,7 +28,9 @@ end;
 var
   Config: TAgenaConfig;
   Server: TAgenaServer;
+  {$IFDEF USE_TAURUS}
   TaurusHandler: TTaurusTLSServerIOHandler;
+  {$ENDIF}
   IndyHandler: TIdServerIOHandlerSSLOpenSSL;
 begin
   if (ParamCount < 1) or (ParamStr(1) = '') then
@@ -63,7 +65,8 @@ begin
     Server.Configure(Config);
 
 {$IFDEF USE_TAURUS}
-    { TaurusTLS takes over from the handler TIdGeminiServer made for itself. }
+    { TIdGeminiServer does not build a handler of its own, so this build makes
+      the one it wants and the server serves through that. }
     TaurusHandler := TTaurusTLSServerIOHandler.Create(Server);
     TaurusHandler.DefaultCert.PublicKey := Config.CertFile;
     TaurusHandler.DefaultCert.PrivateKey := Config.KeyFile;
@@ -74,9 +77,14 @@ begin
     Server.IOHandler := TaurusHandler;
     LogLine('TLS backend:   TaurusTLS, TLS 1.3 available');
 {$ELSE}
-    IndyHandler := Server.SSLIOHandler;
+    { Same here without TaurusTLS: the handler is created here rather than
+      borrowed from the server, which does not put one there. }
+    IndyHandler := TIdServerIOHandlerSSLOpenSSL.Create(Server);
+    IndyHandler.SSLOptions.Method := sslvTLSv1_2;
+    IndyHandler.SSLOptions.Mode := sslmServer;
     IndyHandler.SSLOptions.CertFile := Config.CertFile;
     IndyHandler.SSLOptions.KeyFile := Config.KeyFile;
+    Server.IOHandler := IndyHandler;
     LogLine('TLS backend:   Indy OpenSSL, TLS 1.2 at most');
 {$ENDIF}
 

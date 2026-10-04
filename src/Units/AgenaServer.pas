@@ -32,7 +32,7 @@ type
 implementation
 
 uses
-  SysUtils, IdURI, AgenaLog, AgenaMime, AgenaPaths, AgenaCGI;
+  SysUtils, IdGlobal, IdURI, AgenaLog, AgenaMime, AgenaPaths, AgenaCGI;
 
 procedure TAgenaServer.Configure(const AConfig: TAgenaConfig);
 begin
@@ -56,9 +56,9 @@ procedure TAgenaServer.ServeNotFound(var Response: TStream;
 begin
   Status := gsTempFailure;
   Meta := 'text/gemini; charset=utf-8';
-  TIdGeminiServer.WriteStringToStream(Response,
+  WriteStringToStream(Response,
     '# not found' + LineEnding + LineEnding + 'Nothing here.' + LineEnding,
-    TEncoding.UTF8);
+    IndyTextEncoding_UTF8);
 end;
 
 procedure TAgenaServer.ServeStatic(const URLPath: string;

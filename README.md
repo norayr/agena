@@ -15,10 +15,13 @@ Requirements:
 - Free Pascal Compiler (tested with 3.2.2)
 - Git, to fetch the submodules
 
-Indy and TaurusTLS are vendored as submodules and pinned to known-good commits.
+Indy and TaurusTLS are vendored as submodules. Indy is pinned to
+[`7be08890`](https://github.com/norayr/Indy/commit/7be08890d8b1b2d51e6a6e64384cc908b12a93ed)
+in [norayr/Indy](https://github.com/norayr/Indy), the Gemini/Spartan revision
+submitted in [PR #697](https://github.com/IndySockets/Indy/pull/697).
 
 ```sh
-git clone --recurse-submodules git@github.com:norayr/agena.git
+git clone --recurse-submodules https://github.com/norayr/agena.git
 cd agena
 
 make -f Makefile.fpc check   # verify fpc and both submodules are present
@@ -80,13 +83,13 @@ PathPrefix = /cgi-bin/
 Relative paths are resolved against the directory holding the INI file, so the
 config and its `www` tree can be moved together.
 
-`RequireTLS13 = true` refuses TLS 1.2 and offers 1.3 only. The default, `false`,
-means 1.2 is the floor and 1.3 is negotiated whenever the client offers it.
+The default, `RequireTLS13 = false`, allows TLS 1.2 and negotiates 1.3 when
+the client offers it. `true` sets the TaurusTLS minimum to 1.3, but the current
+integration test still observes TLS 1.2 being accepted; see Known bugs.
 
 ## Features
 
-- **TLS 1.3**, via TaurusTLS, with TLS 1.2 as the default floor and 1.3 only on
-  request
+- **TLS 1.3**, via TaurusTLS, with TLS 1.2 as the default floor
 - Static files under the document root, with a metadata guess by extension
 - `/` and any directory path resolving to `index.gmi`
 - CGI: any path under `PathPrefix` is executed, with a Gemini environment
@@ -100,7 +103,28 @@ means 1.2 is the floor and 1.3 is negotiated whenever the client offers it.
 
 ## Known bugs
 
-None currently known.
+- A CGI program that exits non-zero after producing output can still receive
+  status `20` instead of `42`.
+- `RequireTLS13 = true` does not reject TLS 1.2 in the current test setup.
+  The application sets the minimum version; the cause remains under investigation.
+
+Both are recorded as expected failures in the dcs integration suite.
+
+## Integration tests
+
+The [dcs repository](https://github.com/norayr/dcs/tree/main/tests) contains
+tests that launch agena with temporary certificates and documents, exercise
+the server over raw TLS connections, and fetch from it through dcs.
+With the two checkouts next to each other:
+
+```sh
+make -f Makefile.fpc
+make -C ../dcs -f Makefile.fpc
+make -C ../dcs -f Makefile.fpc test AGENA_DIR="$PWD"
+```
+
+The reviewed revision produced 53 passes, no unexpected failures, and the two
+known failures above. See the suite's README for coverage and filtering options.
 
 ## CGI
 
