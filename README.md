@@ -99,14 +99,54 @@ The default, `RequireTLS13 = false`, allows TLS 1.2 and negotiates 1.3 when
 the client offers it. `true` sets the TaurusTLS minimum to 1.3, but the current
 integration test still observes TLS 1.2 being accepted; see Known bugs.
 
-### Virtual hosts
+### IPv4, IPv6 and multiple listen addresses
 
-Add a `[vhost:hostname]` section for each site. All hosts share `[server]`'s
-listen address and port. For example:
+`BindAddress` accepts one IP literal or a comma-separated list. The default is
+`0.0.0.0` (all IPv4 interfaces). To listen on all IPv4 **and** IPv6 interfaces:
 
 ```ini
 [server]
-BindAddress = 0.0.0.0
+BindAddress = 0.0.0.0, ::
+Port = 1965
+```
+
+Use `::` alone for IPv6 only, or `127.0.0.1, ::1` for both loopback interfaces.
+IPv6 addresses in the INI are written without brackets; `Port` is set separately.
+
+You can list three, five or more specific addresses, in any family order:
+
+```ini
+[server]
+BindAddress = 192.0.2.10, 2001:db8::10, 192.0.2.11, 2001:db8::11, 192.0.2.12
+Port = 1965
+```
+
+These documentation addresses must be replaced with addresses assigned to your
+machine. There is **no fixed address-count limit in agena**; available sockets,
+listener threads and other OS resources set the practical limit. All listeners
+use the same port and serve the same configured virtual hosts.
+
+- IPv6 listeners are IPv6-only, so they do not implicitly accept IPv4 traffic.
+  Include an IPv4 address explicitly when you want both families.
+- Whitespace around commas is allowed. Empty entries and duplicate addresses
+  (including equivalent IPv6 spellings) are configuration errors.
+- Do not combine a wildcard with specific addresses of the **same** family:
+  `0.0.0.0, 127.0.0.1` and `::, ::1` overlap and are rejected. `0.0.0.0, ::`
+  is valid because the two sockets use different families.
+- Bind addresses must be numeric IP literals, not hostnames or address/port
+  pairs. Scoped IPv6 (`%interface`) and IPv4-mapped IPv6 addresses are not supported.
+- If any requested address cannot be bound (unassigned address, occupied port,
+  IPv6 disabled, etc.), startup fails instead of silently omitting that listener.
+  Single-address configurations remain compatible.
+
+### Virtual hosts
+
+Add a `[vhost:hostname]` section for each site. All hosts share `[server]`'s
+listen addresses and port. For example:
+
+```ini
+[server]
+BindAddress = 0.0.0.0, ::
 Port = 1965
 
 [vhost:norayr.am]
@@ -190,6 +230,7 @@ responses that supply their own `Content-Type`.
 
 - **TLS 1.3**, via TaurusTLS, with TLS 1.2 as the default floor
 - Virtual hosts with separate roots, SNI certificates and CGI prefixes
+- IPv4/IPv6 listeners with any number of comma-separated bind addresses
 - Unicode/Punycode domain conversion without an external IDN library
 - Static files with configurable MIME mappings and built-in defaults
 - `/` and directory paths resolving to a configurable index (default `index.gmi`)
@@ -212,7 +253,8 @@ Both are recorded as expected failures in the dcs integration suite.
 
 ## Integration tests
 
-The local suite tests virtual-host routing and certificates, Armenian hostnames,
+The local suite tests IPv4/IPv6 and mixed-address listeners, virtual-host routing
+and certificates, Armenian hostnames,
 SNI/URL mismatches, separate roots, custom indexes, MIME overrides, CGI settings,
 configuration validation and the legacy single-host format:
 

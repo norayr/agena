@@ -17,6 +17,7 @@ type
   TAgenaServer = class(TIdGeminiServer)
   private
     FConfig: TAgenaConfig;
+    procedure PrepareBinding(ABinding: TIdSocketHandle);
     procedure HandleRequest(AContext: TIdContext; const AURL: string;
       out Status: TGeminiStatus; out Meta: string; var Response: TStream);
     procedure ServeStatic(const AHost: TAgenaVirtualHost;
@@ -28,30 +29,63 @@ type
       out Meta: string);
   public
     procedure Configure(const AConfig: TAgenaConfig);
-    procedure Listen(ABindAddress: string; APort: Integer);
+    procedure Listen(const ABindAddresses: TAgenaBindAddresses; APort: Integer);
   end;
 
 implementation
 
 uses
-  SysUtils, IdGlobal, IdURI, TaurusTLS, TaurusTLSHeaders_tls1,
+  SysUtils, Sockets, IdGlobal, IdURI, IdStackConsts, TaurusTLS, TaurusTLSHeaders_tls1,
   AgenaLog, AgenaMime, AgenaPaths, AgenaCGI, AgenaIDN;
 
 procedure TAgenaServer.Configure(const AConfig: TAgenaConfig);
 begin
   FConfig := AConfig;
+  OnBeforeBind := PrepareBinding;
   OnGeminiRequest := HandleRequest;
 end;
 
-procedure TAgenaServer.Listen(ABindAddress: string; APort: Integer);
+procedure TAgenaServer.PrepareBinding(ABinding: TIdSocketHandle);
+begin
+  { Keep the families separate regardless of the OS dual-stack default. This
+    allows 0.0.0.0 and :: to share a port without conflicting or exposing IPv4
+    unexpectedly when only an IPv6 listener was requested. }
+  if ABinding.IPVersion = Id_IPv6 then
+    ABinding.SetSockOpt(Id_SOL_IPv6, IPV6_V6ONLY, 1);
+end;
+
+procedure TAgenaServer.Listen(const ABindAddresses: TAgenaBindAddresses;
+  APort: Integer);
 var
   Binding: TIdSocketHandle;
+  I: Integer;
+  Address: string;
 begin
-  Binding := Bindings.Add;
-  Binding.IP := ABindAddress;
-  Binding.Port := APort;
+  if Active then
+    raise Exception.Create('server is already listening');
+  if Length(ABindAddresses) = 0 then
+    raise Exception.Create('at least one listen address is required');
+  Bindings.Clear;
+  for I := 0 to High(ABindAddresses) do
+  begin
+    Binding := Bindings.Add;
+    if Pos(':', ABindAddresses[I]) > 0 then
+      Binding.IPVersion := Id_IPv6
+    else
+      Binding.IPVersion := Id_IPv4;
+    Binding.IP := ABindAddresses[I];
+    Binding.Port := APort;
+  end;
+  { Activate only after adding every binding. Failure on any address is fatal,
+    rather than leaving a partly configured server running. }
   Active := True;
-  LogLine(Format('listening on  %s:%d', [ABindAddress, APort]));
+  for I := 0 to Bindings.Count - 1 do
+  begin
+    Address := Bindings[I].IP;
+    if Bindings[I].IPVersion = Id_IPv6 then
+      Address := '[' + Address + ']';
+    LogLine(Format('listening on  %s:%d', [Address, Bindings[I].Port]));
+  end;
 end;
 
 procedure TAgenaServer.ServeNotFound(var Response: TStream;

@@ -2,7 +2,7 @@
 #
 #   make -f Makefile.fpc              build with TaurusTLS
 #   make -f Makefile.fpc check        verify prerequisites and submodules
-#   make -f Makefile.fpc test         virtual-host and MIME integration tests
+#   make -f Makefile.fpc test         listener, virtual-host, MIME and IDN tests
 #   make -f Makefile.fpc clean
 #
 # FPC is a prerequisite; Indy and TaurusTLS are vendored as git submodules.

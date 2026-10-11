@@ -8,6 +8,8 @@ uses
   AgenaMime;
 
 type
+  TAgenaBindAddresses = array of string;
+
   TAgenaVirtualHost = record
     Hostname: string;
     DocumentRoot: string;
@@ -21,7 +23,7 @@ type
   { Everything agena reads from its INI file. }
 
   TAgenaConfig = record
-    BindAddress: string;
+    BindAddresses: TAgenaBindAddresses;
     Port: Integer;
     DocumentRoot: string;
     CertFile: string;
@@ -41,7 +43,72 @@ function LoadAgenaConfig(const AFileName: string): TAgenaConfig;
 implementation
 
 uses
-  SysUtils, Classes, IniFiles, AgenaLog, AgenaIDN;
+  SysUtils, Classes, IniFiles, Sockets, AgenaLog, AgenaIDN;
+
+procedure LoadBindAddresses(const AValue: string;
+  out AAddresses: TAgenaBindAddresses);
+var
+  I, J, K, Start, Count, N: Integer;
+  Address, Canonical: string;
+  IPv4: TInAddr;
+  IPv6: TIn6Addr;
+  IsIPv6, IsWildcard, PreviousWildcard: Boolean;
+begin
+  Count := 1;
+  for I := 1 to Length(AValue) do
+    if AValue[I] = ',' then
+      Inc(Count);
+  SetLength(AAddresses, Count);
+  Start := 1;
+  N := 0;
+  for I := 1 to Length(AValue) + 1 do
+    if (I > Length(AValue)) or (AValue[I] = ',') then
+    begin
+      Address := Trim(Copy(AValue, Start, I - Start));
+      if Address = '' then
+        raise Exception.Create('server/BindAddress contains an empty address');
+      IsIPv6 := Pos(':', Address) > 0;
+      if IsIPv6 then
+      begin
+        if not TryStrToHostAddr6(Address, IPv6) then
+          raise Exception.Create('invalid IP address in server/BindAddress: ' + Address);
+        { IPv6-only sockets cannot accept IPv4-mapped connections. }
+        if (IPv6.u6_addr32[0] = 0) and (IPv6.u6_addr32[1] = 0) and
+           (IPv6.u6_addr16[4] = 0) and (IPv6.u6_addr16[5] = htons($FFFF)) then
+          raise Exception.Create('IPv4-mapped listener is not supported; use an IPv4 address: ' + Address);
+        { An expanded form provides a stable key for duplicate detection. }
+        Canonical := '';
+        for K := 0 to 7 do
+        begin
+          if K > 0 then
+            Canonical := Canonical + ':';
+          Canonical := Canonical + LowerCase(IntToHex(ntohs(IPv6.u6_addr16[K]), 1));
+        end;
+        if (IPv6.u6_addr32[0] = 0) and (IPv6.u6_addr32[1] = 0) and
+           (IPv6.u6_addr32[2] = 0) and (IPv6.u6_addr32[3] = 0) then
+          Canonical := '::';
+      end
+      else
+      begin
+        if not TryStrToHostAddr(Address, IPv4) then
+          raise Exception.Create('invalid IP address in server/BindAddress: ' + Address);
+        Canonical := HostAddrToStr(IPv4);
+      end;
+      IsWildcard := (Canonical = '0.0.0.0') or (Canonical = '::');
+      for J := 0 to N - 1 do
+      begin
+        if AAddresses[J] = Canonical then
+          raise Exception.Create('duplicate address in server/BindAddress: ' + Address);
+        PreviousWildcard := (AAddresses[J] = '0.0.0.0') or (AAddresses[J] = '::');
+        if (IsIPv6 = (Pos(':', AAddresses[J]) > 0)) and
+           (IsWildcard or PreviousWildcard) then
+          raise Exception.Create('wildcard overlaps another address in server/BindAddress: ' + Address);
+      end;
+      AAddresses[N] := Canonical;
+      Inc(N);
+      Start := I + 1;
+    end;
+end;
 
 function ConfigPath(const ABase, APath: string): string;
 begin
@@ -118,6 +185,7 @@ var
   Section, Name, Root: string;
   I, J, N: Integer;
 begin
+  Result.BindAddresses := nil;
   Result.VirtualHosts := nil;
   Result.MimeTypes := nil;
   if not FileExists(AFileName) then
@@ -128,7 +196,8 @@ begin
 
   Ini := TIniFile.Create(AFileName);
   try
-    Result.BindAddress := Ini.ReadString('server', 'BindAddress', '0.0.0.0');
+    LoadBindAddresses(Ini.ReadString('server', 'BindAddress', '0.0.0.0'),
+      Result.BindAddresses);
     Result.Port := Ini.ReadInteger('server', 'Port', 1965);
     Result.DocumentRoot := ConfigPath(Base,
       Ini.ReadString('server', 'DocumentRoot', 'www'));

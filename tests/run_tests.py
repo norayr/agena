@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local virtual-host, MIME and pure-Pascal IDN tests; no external network.
+"""Local listener, virtual-host, MIME and IDN tests; no external network.
 
 Run `make -f Makefile.fpc test`. Requires Python 3, FPC and the openssl CLI.
 The IDN probe is compiled with range/overflow checks into a temporary directory.
@@ -8,8 +8,10 @@ The IDN probe is compiled with range/overflow checks into a temporary directory.
 from __future__ import annotations
 
 import concurrent.futures
+import ipaddress
 import os
 import random
+import re
 import socket
 import ssl
 import subprocess
@@ -33,11 +35,18 @@ def write(path: Path, text: str, executable: bool = False) -> None:
 
 
 class Server:
-    def __init__(self, root: Path, config: str):
+    def __init__(self, root: Path, config: str, *, connect_address: str = "127.0.0.1",
+                 port: int | None = None):
         root.mkdir(parents=True, exist_ok=True)
-        with socket.socket() as sock:
-            sock.bind(("127.0.0.1", 0))
-            self.port = sock.getsockname()[1]
+        self.connect_address = connect_address
+        if port is None:
+            family = socket.AF_INET6 if ":" in connect_address else socket.AF_INET
+            with socket.socket(family) as sock:
+                if family == socket.AF_INET6:
+                    sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+                sock.bind((connect_address, 0))
+                port = sock.getsockname()[1]
+        self.port = port
         ini = root / "agena.ini"
         ini.write_text(config.replace("@PORT@", str(self.port)), encoding="utf-8")
         self.log_path = root / "server.log"
@@ -51,7 +60,7 @@ class Server:
                 if self.process.poll() is not None:
                     raise RuntimeError(self.log_path.read_text())
                 try:
-                    with socket.create_connection(("127.0.0.1", self.port), timeout=0.2):
+                    with socket.create_connection((connect_address, self.port), timeout=0.2):
                         return
                 except OSError:
                     time.sleep(0.05)
@@ -72,7 +81,7 @@ class Server:
 
     def fetch(self, host: str, path: str = "/", *, sni: str | None = None,
               no_sni: bool = False, port: int | None = None,
-              verify: bool = False) -> tuple[bytes, bytes, bytes]:
+              verify: bool = False, connect_address: str | None = None) -> tuple[bytes, bytes, bytes]:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         if verify:
             for cert in CERTS:
@@ -80,10 +89,11 @@ class Server:
         else:
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
-        with socket.create_connection(("127.0.0.1", self.port), timeout=5) as sock:
+        with socket.create_connection((connect_address or self.connect_address, self.port), timeout=5) as sock:
             with ctx.wrap_socket(sock, server_hostname=None if no_sni else (sni or host)) as tls:
                 certificate = tls.getpeercert(binary_form=True)
-                url = f"gemini://{host}:{self.port if port is None else port}{path}\r\n"
+                authority = f"[{host}]" if ":" in host else host
+                url = f"gemini://{authority}:{self.port if port is None else port}{path}\r\n"
                 tls.sendall(url.encode("utf-8"))
                 data = bytearray()
                 while chunk := tls.recv(16384):
@@ -323,9 +333,9 @@ class IntegrationTests(unittest.TestCase):
 
 
 class ConfigurationTests(unittest.TestCase):
-    def reject(self, extra: str, message: str):
+    def reject(self, extra: str, message: str, *, bind: str = "127.0.0.1"):
         config = ROOT / "bad.ini"
-        config.write_text("[server]\nBindAddress=127.0.0.1\nPort=1965\n" + extra,
+        config.write_text(f"[server]\nBindAddress={bind}\nPort=1965\n" + extra,
                           encoding="utf-8")
         result = subprocess.run([str(BINARY), str(config)], cwd=ROOT.parent,
                                 capture_output=True, timeout=5)
@@ -363,6 +373,189 @@ class ConfigurationTests(unittest.TestCase):
                     "[vhost:two.example]\nDocumentRoot=hosts/two\n"
                     "CertificateFile=missing.pem\nPrivateKeyFile=missing.key\n",
                     "two.example: certificate not found")
+
+    def test_empty_bind_list_entries(self):
+        for value in ["", " ", ",127.0.0.1", "127.0.0.1,", "127.0.0.1,,::1"]:
+            with self.subTest(value=value):
+                self.reject("", "empty address", bind=value)
+
+    def test_invalid_ip_literals(self):
+        for value in ["localhost", "*", "256.0.0.1", "127.1", "127.0.0.1:1965",
+                      ":1", "1:", ":::1", "1::2::3", "12345::1", "[::1]",
+                      "[::1]:1965", "fe80::1%eth0", "2001:db8:1", "::g"]:
+            with self.subTest(value=value):
+                self.reject("", "invalid IP address", bind=value)
+
+    def test_duplicate_bind_addresses(self):
+        for value in ["127.0.0.1, 127.0.0.1", "127.0.0.1,127.000.000.001",
+                      "::1,0:0:0:0:0:0:0:1", "::,0:0:0:0:0:0:0:0",
+                      "2001:DB8::a,2001:db8:0:0:0:0:0:000A"]:
+            with self.subTest(value=value):
+                self.reject("", "duplicate address", bind=value)
+
+    def test_wildcard_overlap_in_same_family(self):
+        for value in ["0.0.0.0,127.0.0.1", "127.0.0.1,0.0.0.0",
+                      "::,::1", "::1,0:0:0:0:0:0:0:0"]:
+            with self.subTest(value=value):
+                self.reject("", "wildcard overlaps", bind=value)
+
+    def test_ipv4_mapped_ipv6_listener_rejected(self):
+        for value in ["::ffff:127.0.0.1", "0:0:0:0:0:ffff:7f00:1"]:
+            self.reject("", "IPv4-mapped listener", bind=value)
+
+
+class BindConfigurationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.directory = tempfile.TemporaryDirectory(prefix="agena-bind-config-")
+        cls.probe = Path(cls.directory.name) / "config_probe"
+        subprocess.run(
+            [os.environ.get("FPC", "fpc"), "-Mdelphi", "-Cr", "-Co", "-O1",
+             "-Fu" + str(PROJECT / "src" / "Units"), "-FU" + cls.directory.name,
+             "-FE" + cls.directory.name, str(PROJECT / "tests" / "config_probe.pas")],
+            check=True, capture_output=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.directory.cleanup()
+
+    def parse(self, settings):
+        config = Path(self.directory.name) / "config.ini"
+        config.write_text("[server]\n" + settings, encoding="utf-8")
+        result = subprocess.run([str(self.probe), str(config)], capture_output=True,
+                                check=True, timeout=5)
+        return [line.split("\t", 1)[1] for line in result.stdout.decode().splitlines()
+                if line.startswith("BIND\t")]
+
+    def test_original_default(self):
+        self.assertEqual(self.parse(""), ["0.0.0.0"])
+
+    def test_single_ipv4_and_ipv6(self):
+        self.assertEqual(self.parse("BindAddress=127.0.0.1\n"), ["127.0.0.1"])
+        self.assertEqual(self.parse("BindAddress=::1\n"), ["0:0:0:0:0:0:0:1"])
+
+    def test_mixed_families_and_whitespace(self):
+        self.assertEqual(self.parse("BindAddress= 127.0.0.1 ,\t2001:DB8::a , ::1\n"),
+                         ["127.0.0.1", "2001:db8:0:0:0:0:0:a", "0:0:0:0:0:0:0:1"])
+
+    def test_dual_wildcards(self):
+        for addresses in ["0.0.0.0, ::", "::, 0.0.0.0"]:
+            self.assertEqual(len(self.parse("BindAddress=" + addresses + "\n")), 2)
+
+    def test_more_than_five_addresses(self):
+        values = [value for i in range(1, 65) for value in [f"192.0.2.{i}", f"2001:db8::{i:x}"]]
+        got = self.parse("BindAddress=" + ", ".join(values) + "\n")
+        self.assertEqual(len(got), 128)
+        self.assertEqual(got[::2], values[::2])
+        self.assertEqual(got[1::2], [f"2001:db8:0:0:0:0:0:{i:x}" for i in range(1, 65)])
+
+
+class ListenerTests(unittest.TestCase):
+    def require_addresses(self, addresses):
+        for address in addresses:
+            family = socket.AF_INET6 if ":" in address else socket.AF_INET
+            try:
+                with socket.socket(family) as sock:
+                    if family == socket.AF_INET6:
+                        sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+                    sock.bind((address, 0))
+            except OSError as error:
+                self.skipTest(f"{address} unavailable: {error}")
+
+    def start(self, addresses, *, connect_address="127.0.0.1", legacy=False):
+        self.require_addresses([address.strip() for address in addresses.split(",")])
+        directory = tempfile.TemporaryDirectory(prefix="listener-", dir=ROOT)
+        self.addCleanup(directory.cleanup)
+        config = f"[server]\nBindAddress={addresses}\nPort=@PORT@\n"
+        if legacy:
+            config += (f"DocumentRoot={ROOT / 'hosts' / 'one'}\n[tls]\n"
+                       f"CertificateFile={CERTS[0]}\nPrivateKeyFile={KEYS[0]}\n")
+        else:
+            for i, name in enumerate(["one", "two"]):
+                config += (f"[vhost:{name}.example]\nDocumentRoot={ROOT / 'hosts' / name}\n"
+                           f"Index={'index.gmi' if i == 0 else 'home.gmi'}\n"
+                           f"CertificateFile={CERTS[i]}\nPrivateKeyFile={KEYS[i]}\n")
+        server = Server(Path(directory.name), config, connect_address=connect_address)
+        self.addCleanup(server.stop)
+        return server
+
+    def check_hosts(self, server, addresses):
+        for address in addresses:
+            for name, body in [("one.example", b"# first host\n"), ("two.example", b"# second host\n")]:
+                with self.subTest(address=address, hostname=name):
+                    header, actual, _ = server.fetch(name, connect_address=address, verify=True)
+                    self.assertEqual(header, b"20 text/gemini; charset=utf-8")
+                    self.assertEqual(actual, body)
+
+    def test_ipv6_only(self):
+        server = self.start("::1", connect_address="::1")
+        self.check_hosts(server, ["::1"])
+        with self.assertRaises(OSError):
+            socket.create_connection(("127.0.0.1", server.port), timeout=1)
+
+    def test_ipv6_literal_url_in_legacy_mode(self):
+        server = self.start("::1", connect_address="::1", legacy=True)
+        header, body, _ = server.fetch("::1", no_sni=True)
+        self.assertEqual(header, b"20 text/gemini; charset=utf-8")
+        self.assertEqual(body, b"# first host\n")
+
+    def test_three_mixed_addresses(self):
+        addresses = ["127.0.0.1", "127.0.0.2", "::1"]
+        server = self.start(",".join(addresses))
+        self.check_hosts(server, addresses)
+
+    def test_five_mixed_addresses(self):
+        addresses = ["127.0.0.1", "127.0.0.2", "127.0.0.3", "127.0.0.4", "::1"]
+        server = self.start(",".join(addresses))
+        self.check_hosts(server, addresses)
+
+    def test_dual_wildcards_in_both_orders(self):
+        for addresses in ["0.0.0.0,::", "::,0.0.0.0"]:
+            with self.subTest(order=addresses):
+                server = self.start(addresses)
+                try:
+                    self.check_hosts(server, ["127.0.0.1", "::1"])
+                finally:
+                    server.stop()
+
+    def test_ipv6_wildcard_does_not_also_bind_ipv4(self):
+        server = self.start("::", connect_address="::1")
+        self.check_hosts(server, ["::1"])
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", server.port))
+        with self.assertRaises(OSError):
+            socket.create_connection(("127.0.0.1", server.port), timeout=1)
+
+    def test_sni_url_mismatch_denied_on_ipv6(self):
+        server = self.start("::1", connect_address="::1")
+        header, body, _ = server.fetch("two.example", sni="one.example")
+        self.assertTrue(header.startswith(b"50 "))
+        self.assertEqual(body, b"")
+
+    def test_ipv6_logs_use_bracketed_authority(self):
+        server = self.start("::1", connect_address="::1")
+        match = re.search(r"listening on  \[([0-9a-fA-F:]+)\]:(\d+)", server.log_path.read_text())
+        self.assertIsNotNone(match)
+        self.assertEqual(ipaddress.ip_address(match[1]), ipaddress.ip_address("::1"))
+        self.assertEqual(int(match[2]), server.port)
+
+    def test_conflicting_later_listener_fails_and_releases_first(self):
+        self.require_addresses(["127.0.0.1", "::1"])
+        with socket.socket(socket.AF_INET6) as occupied:
+            occupied.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            occupied.bind(("::1", 0))
+            occupied.listen()
+            port = occupied.getsockname()[1]
+            config = ROOT / "occupied.ini"
+            config.write_text(
+                f"[server]\nBindAddress=127.0.0.1,::1\nPort={port}\n"
+                f"DocumentRoot={ROOT / 'hosts' / 'one'}\n[tls]\n"
+                f"CertificateFile={CERTS[0]}\nPrivateKeyFile={KEYS[0]}\n", encoding="utf-8")
+            result = subprocess.run([str(BINARY), str(config)], capture_output=True, timeout=5)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(b"fatal:", result.stdout + result.stderr)
+            with socket.socket() as first:
+                first.bind(("127.0.0.1", port))
 
 
 def certificate(root: Path, name: str, extra_name: str = "") -> tuple[Path, Path]:

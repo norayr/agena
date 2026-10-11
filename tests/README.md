@@ -10,6 +10,10 @@ libraries used by TaurusTLS. No IDN library, DNS access or public server is used
 `run_tests.py` generates short-lived self-signed certificates, temporary document
 roots and INI files. It connects to agena over loopback TLS and checks:
 
+- IPv6-only and dual-family listeners, wildcard binding in either family order,
+  three/five-address mixed lists, IPv6 URL literals and SNI routing on IPv6.
+- Duplicate/invalid/overlapping bind addresses, plus startup failure and cleanup
+  when a later listener's port is occupied. No network interfaces are modified.
 - Different SNI certificates and document roots on the same port, including an
   Armenian hostname configured in UTF-8 and requested in Punycode.
 - Hostname/certificate validation, case handling, custom indexes, rejection of
@@ -23,6 +27,11 @@ roots and INI files. It connects to agena over loopback TLS and checks:
 directory. Conversion checks cover Armenian and other scripts, DNS limits,
 malformed UTF-8/ACE, non-BMP raw Punycode and 2,000 randomized labels compared
 against Python's Punycode codec in both directions.
+
+`config_probe.pas` is also compiled with range/overflow checks. It tests bind-list
+parsing independently of available interfaces, including a 128-address mixed
+list. Socket tests skip with a reason if IPv6 or the additional IPv4 loopback
+addresses are unavailable; parsing tests still run on those machines.
 
 `AGENA_BIN=/path/to/agena` selects an existing binary; `FPC=/path/to/fpc` selects
 the compiler for the probe. Python unittest filtering also works, for example:

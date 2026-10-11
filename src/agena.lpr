@@ -78,7 +78,7 @@ begin
     Server.IOHandler := TaurusHandler;
     LogLine('TLS backend:   TaurusTLS, TLS 1.3 available');
 
-    Server.Listen(Config.BindAddress, Config.Port);
+    Server.Listen(Config.BindAddresses, Config.Port);
     LogLine('Ctrl-C to stop');
 
     while Server.Active do
