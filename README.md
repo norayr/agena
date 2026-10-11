@@ -2,11 +2,12 @@
 
 A small Gemini server written in Free Pascal.
 
-It serves a document root over TLS and runs CGI programs, using
+It serves virtual hosts over TLS and runs CGI programs, using
 [Indy](https://github.com/IndySockets/Indy) for the protocol side and
-[TaurusTLS](https://github.com/TaurusTLS-Developers/TaurusTLS) for TLS, which
-gives TLS 1.3 — something Indy's own OpenSSL handler cannot do, since it
-targets OpenSSL 1.0.x.
+[TaurusTLS](https://github.com/TaurusTLS-Developers/TaurusTLS) for TLS, supporting
+TLS 1.2 and TLS 1.3. TaurusTLS is agena's only TLS backend; the legacy Indy
+OpenSSL handler is no longer supported. TaurusTLS itself uses the system
+OpenSSL libraries, so this does not remove OpenSSL as a dependency.
 
 ## Build
 
@@ -14,6 +15,7 @@ Requirements:
 
 - Free Pascal Compiler (tested with 3.2.2)
 - Git, to fetch the submodules
+- System OpenSSL libraries compatible with TaurusTLS (tested with OpenSSL 3)
 
 Indy and TaurusTLS are vendored as submodules. Indy is pinned to
 [`7be08890`](https://github.com/norayr/Indy/commit/7be08890d8b1b2d51e6a6e64384cc908b12a93ed)
@@ -30,13 +32,8 @@ make -f Makefile.fpc         # build with TaurusTLS (TLS 1.3)
 
 The binary lands in `build/agena`.
 
-To build against Indy's own OpenSSL handler instead, which caps out at TLS 1.2:
-
-```sh
-make -f Makefile.fpc clean
-make -f Makefile.fpc USE_TAURUS=0
-```
-
+The former `USE_TAURUS=0` build option is rejected instead of silently selecting
+an unsupported handler.
 `make -f Makefile.fpc clean` removes the build directory.
 
 ## Run
@@ -61,15 +58,25 @@ standard output and runs until interrupted.
 Certificate and key files are git-ignored, along with the `build` directory, so
 generating them locally does not risk committing a private key.
 
-### Configuration
+### Configuration examples
 
-`agena.ini`:
+Both example configurations are included:
+
+| Setup | Example |
+| --- | --- |
+| Single host, one document root and certificate | [agena.ini](agena.ini) |
+| Multiple virtual hosts, separate roots and certificates | [agena-vhosts.ini](agena-vhosts.ini) |
+
+### Single host
+
+The [agena.ini](agena.ini) example uses the original single-host format:
 
 ```ini
 [server]
 BindAddress = 127.0.0.1
 Port = 1965
 DocumentRoot = www
+Index = index.gmi
 
 [tls]
 CertificateFile = cert.pem
@@ -78,6 +85,11 @@ RequireTLS13 = false
 
 [cgi]
 PathPrefix = /cgi-bin/
+
+[types]
+mp3 = audio/mpeg
+ogg = audio/ogg
+pdf = application/pdf
 ```
 
 Relative paths are resolved against the directory holding the INI file, so the
@@ -87,19 +99,107 @@ The default, `RequireTLS13 = false`, allows TLS 1.2 and negotiates 1.3 when
 the client offers it. `true` sets the TaurusTLS minimum to 1.3, but the current
 integration test still observes TLS 1.2 being accepted; see Known bugs.
 
+### Virtual hosts
+
+Add a `[vhost:hostname]` section for each site. All hosts share `[server]`'s
+listen address and port. For example:
+
+```ini
+[server]
+BindAddress = 0.0.0.0
+Port = 1965
+
+[vhost:norayr.am]
+DocumentRoot = /srv/gemini/norayr.am/pub
+Index = index.gmi
+CertificateFile = /srv/gemini/norayr.am/norayr.am.crt
+PrivateKeyFile = /srv/gemini/norayr.am/norayr.am.key
+
+[vhost:սոնա.հայ]
+DocumentRoot = /srv/gemini/սոնա.հայ/pub
+CertificateFile = /srv/gemini/սոնա.հայ/fullchain.pem
+PrivateKeyFile = /srv/gemini/սոնա.հայ/privkey.pem
+```
+
+See [agena-vhosts.ini](agena-vhosts.ini) for a complete multiple-host example.
+After adjusting its document roots and certificate paths, start it with:
+
+```sh
+./build/agena agena-vhosts.ini
+```
+
+- `DocumentRoot` is required for each host. Paths are relative to the INI file
+  unless absolute.
+- `Index` defaults to `[server]`'s `Index`, or `index.gmi`.
+- Certificate/key settings can inherit `[tls]`'s `CertificateFile` and
+  `PrivateKeyFile`. Each certificate must cover that host's ASCII DNS name.
+- `CGIPrefix` inherits `[cgi]`'s `PathPrefix`. An empty value disables CGI for
+  that host; CGI receives its selected `SERVER_NAME` and `DOCUMENT_ROOT`.
+- Optional `Hostname` overrides the name in the section title. Unicode and
+  ASCII/Punycode forms are accepted; duplicates are rejected after conversion.
+- TaurusTLS chooses the certificate using TLS SNI. agena routes the Gemini URL
+  only when its hostname matches SNI and its port matches the listener. Unknown
+  hosts never fall through to another document root. Request denials receive
+  `50`; an unknown SNI not covered by any certificate fails the TLS handshake.
+- Without SNI, only the first configured host can be served, using its default
+  certificate. Wildcards, aliases and per-location rules are not implemented.
+
+Without any `[vhost:...]` sections, the original single-host configuration
+continues to work: `[server]` supplies the document root and `[tls]` the keypair.
+Once virtual hosts are configured there is no unnamed fallback document root.
+
+#### Internationalized names
+
+`AgenaIDN.pas` is a separate pure-Pascal RFC 3492 Punycode encoder/decoder, with
+UTF-8 domain conversion and DNS length/character checks. It needs **no libidn2,
+external command, Lazarus package or platform-specific IDN API**. The standard
+RTL `Character` unit supplies Unicode case handling; we do not reimplement it.
+
+For example, `սոնա.հայ` becomes `xn--y9a5bft.xn--y9a3aq`. Clients should send
+that ASCII form in SNI and the request URL, and certificates must cover it.
+Unicode directory names are independent of the hostname conversion.
+
+This is not a complete IDNA2008/UTS46 implementation. Use NFC-normalized names;
+the converter does not normalize Unicode or implement contextual/bidirectional
+rules. It accepts letters, decimal digits and combining marks (not initially),
+plus DNS ASCII characters; emoji, joiners and other symbols are rejected.
+
+### MIME types
+
+`[types]` maps extensions to full Gemini response metadata:
+
+```ini
+[types]
+mp3 = audio/mpeg
+ogg = audio/ogg
+jpg = image/jpeg
+jpeg = image/jpeg
+png = image/png
+gif = image/gif
+pdf = application/pdf
+txt = text/plain; charset=utf-8
+```
+
+Extensions are case-insensitive; a leading dot is optional. Configured mappings
+override built-ins, while unlisted extensions retain their existing defaults.
+Unknown extensions use `application/octet-stream`; extensionless files retain
+the legacy `text/plain` behavior. These mappings apply to static files, not CGI
+responses that supply their own `Content-Type`.
+
 ## Features
 
 - **TLS 1.3**, via TaurusTLS, with TLS 1.2 as the default floor
-- Static files under the document root, with a metadata guess by extension
-- `/` and any directory path resolving to `index.gmi`
+- Virtual hosts with separate roots, SNI certificates and CGI prefixes
+- Unicode/Punycode domain conversion without an external IDN library
+- Static files with configurable MIME mappings and built-in defaults
+- `/` and directory paths resolving to a configurable index (default `index.gmi`)
 - CGI: any path under `PathPrefix` is executed, with a Gemini environment
 - Path traversal defence, in one place (`AgenaPaths.ResolveUnderRoot`)
 - Correct status codes: `20` for success and `40` for a missing document
 - One INI file, with relative paths resolved against it, so the config and its
   `www` tree can be moved together
 - Logging to standard output
-- One self-contained binary: Indy and TaurusTLS are vendored and pinned, so
-  there is nothing to install alongside it
+- Indy and TaurusTLS compiled into one binary; system OpenSSL is still required
 
 ## Known bugs
 
@@ -111,6 +211,19 @@ integration test still observes TLS 1.2 being accepted; see Known bugs.
 Both are recorded as expected failures in the dcs integration suite.
 
 ## Integration tests
+
+The local suite tests virtual-host routing and certificates, Armenian hostnames,
+SNI/URL mismatches, separate roots, custom indexes, MIME overrides, CGI settings,
+configuration validation and the legacy single-host format:
+
+```sh
+make -f Makefile.fpc test
+```
+
+It uses temporary certificates/files and loopback sockets only. Requirements
+are Python 3, FPC and the `openssl` CLI. The standalone IDN probe is compiled
+with range and overflow checks, and its randomized encode/decode cases are
+compared with Python's independent Punycode codec. See [tests/README.md](tests/README.md).
 
 The [dcs repository](https://github.com/norayr/dcs/tree/main/tests) contains
 tests that launch agena with temporary certificates and documents, exercise
@@ -151,6 +264,7 @@ The environment includes the usual CGI names, plus Gemini-specific ones:
 | `REMOTE_ADDR` | peer address |
 | `SCRIPT_FILENAME` | resolved script path |
 | `DOCUMENT_ROOT` | the configured document root |
+| `SERVER_NAME` | the selected virtual host's ASCII hostname (URL host in legacy mode) |
 
 Two worked examples ship in `www/cgi-bin`. `hello.py` has a shebang and runs as
 is; it echoes back the query string and shows what the environment looks like.
@@ -170,19 +284,22 @@ script or extend `AgenaCGI` as needed.
 ```
 Makefile.fpc          build
 agena.ini             sample configuration
-src/agena.lpr         program: reads config, picks a TLS backend, listens
+agena-vhosts.ini      virtual-host configuration example
+src/agena.lpr         program: reads config, configures TaurusTLS/SNI, listens
 src/Units/AgenaConfig INI parsing and validation
 src/Units/AgenaServer request dispatch, static serving
 src/Units/AgenaCGI    CGI execution
 src/Units/AgenaPaths  URL to filename mapping, traversal defence
 src/Units/AgenaMime   extension to metadata
+src/Units/AgenaIDN    standalone Punycode and UTF-8 domain conversion
 src/Units/AgenaLog    logging
+tests/                virtual-host, MIME, configuration and IDN tests
 www/                  document root, with the CGI example under cgi-bin/
 third_party/          Indy and TaurusTLS submodules
 ```
 
-The split is by responsibility, so the TLS backend is a choice in one place and
-filename resolution is a decision in one place.
+The split is by responsibility, so TLS setup and filename resolution each stay
+in one place. Proxying and FastCGI remain future features.
 
 ## Credits
 

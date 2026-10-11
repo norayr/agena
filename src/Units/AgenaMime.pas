@@ -4,19 +4,32 @@ unit AgenaMime;
 
 interface
 
+type
+  TAgenaMimeType = record
+    Extension: string;
+    Meta: string;
+  end;
+  TAgenaMimeTypes = array of TAgenaMimeType;
+
 { Response metadata for a file path, chosen from its extension. }
-function MetaForPath(const APath: string): string;
+function MetaForPath(const APath: string;
+  const AOverrides: TAgenaMimeTypes): string;
 
 implementation
 
 uses
   SysUtils;
 
-function MetaForPath(const APath: string): string;
+function MetaForPath(const APath: string;
+  const AOverrides: TAgenaMimeTypes): string;
 var
   Ext: string;
+  I: Integer;
 begin
   Ext := LowerCase(ExtractFileExt(APath));
+  for I := 0 to High(AOverrides) do
+    if Ext = '.' + AOverrides[I].Extension then
+      Exit(AOverrides[I].Meta);
   if Ext = '' then
     Exit('text/plain');
   if (Ext = '.gmi') or (Ext = '.gemini') then
@@ -45,6 +58,12 @@ begin
     Exit('image/webp');
   if Ext = '.ico' then
     Exit('image/vnd.microsoft.icon');
+  if Ext = '.mp3' then
+    Exit('audio/mpeg');
+  if Ext = '.ogg' then
+    Exit('audio/ogg');
+  if Ext = '.pdf' then
+    Exit('application/pdf');
   Result := 'application/octet-stream';
 end;
 

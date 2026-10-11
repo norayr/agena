@@ -7,11 +7,12 @@ interface
 { Maps a request path onto a file inside the document root.
   Returns an absolute filename, or '' when the path escapes the root, is
   absolute, or names a file that does not exist.  A directory path, or an
-  empty path, resolves to "index.gmi" inside it.
+  empty path, resolves to the configured index filename inside it.
 
   This is the only place that turns a URL into a filename, so it is the only
   place that has to be careful about traversal. }
-function ResolveUnderRoot(const ADocumentRoot, AURLPath: string): string;
+function ResolveUnderRoot(const ADocumentRoot, AURLPath: string;
+  const AIndexFile: string = 'index.gmi'): string;
 
 implementation
 
@@ -30,7 +31,8 @@ begin
 {$ENDIF}
 end;
 
-function ResolveUnderRoot(const ADocumentRoot, AURLPath: string): string;
+function ResolveUnderRoot(const ADocumentRoot, AURLPath,
+  AIndexFile: string): string;
 var
   Rel: string;
   Root: string;
@@ -47,7 +49,7 @@ begin
     Exit('');
 
   if (Rel = '') or (Rel[Length(Rel)] = '/') then
-    Rel := Rel + 'index.gmi';
+    Rel := Rel + AIndexFile;
 
   Root := IncludeTrailingPathDelimiter(ExpandFileName(ADocumentRoot));
   Full := ExpandFileName(Root + Rel);

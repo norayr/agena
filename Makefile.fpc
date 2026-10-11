@@ -1,14 +1,19 @@
 # agena - a small Gemini server
 #
-#   make -f Makefile.fpc              build with TaurusTLS (TLS 1.3), default
-#   make -f Makefile.fpc USE_TAURUS=0 build against Indy's OpenSSL 1.0.x
+#   make -f Makefile.fpc              build with TaurusTLS
 #   make -f Makefile.fpc check        verify prerequisites and submodules
+#   make -f Makefile.fpc test         virtual-host and MIME integration tests
 #   make -f Makefile.fpc clean
 #
 # FPC is a prerequisite; Indy and TaurusTLS are vendored as git submodules.
 
 FPC        ?= fpc
-USE_TAURUS ?= 1
+# The legacy Indy OpenSSL handler has been retired in agena.
+ifdef USE_TAURUS
+ifneq ($(USE_TAURUS),1)
+$(error agena only supports TaurusTLS; remove USE_TAURUS=$(USE_TAURUS))
+endif
+endif
 
 INDY   := third_party/Indy/Lib
 TAURUS := third_party/TaurusTLS/Source
@@ -20,31 +25,27 @@ UNITS    := $(BUILDDIR)/units
 AGENA_UNITS := $(wildcard src/Units/*.pas)
 
 PATHS := -Fu$(INDY)/Core -Fu$(INDY)/System -Fu$(INDY)/Protocols \
-         -Fu$(INDY)/Security
+         -Fu$(INDY)/Security -Fu$(TAURUS)
 INCS  := -Fi$(INDY)/Core -Fi$(INDY)/Protocols -Fi$(INDY)/Security
 
-ifeq ($(USE_TAURUS),1)
-FPCOPT := -dUSE_TAURUS
-PATHS += -Fu$(TAURUS)
-endif
-
-.PHONY: all clean check
+.PHONY: all clean check test
 
 all: $(TARGET)
 
 $(TARGET): src/agena.lpr $(AGENA_UNITS)
 	mkdir -p $(BUILDDIR) $(UNITS)
-	$(FPC) -Mdelphi -O2 -g -gl $(FPCOPT) \
+	$(FPC) -Mdelphi -O2 -g -gl \
 	  -FU$(UNITS) -FE$(BUILDDIR) -Fusrc/Units \
 	  $(PATHS) $(INCS) $<
 
 check:
 	@command -v $(FPC) >/dev/null || { echo "fpc not found in PATH"; exit 1; }
 	@test -d third_party/Indy || { echo "missing submodule: Indy"; exit 1; }
-	@if [ "$(USE_TAURUS)" = "1" ]; then \
-	   test -d third_party/TaurusTLS || { echo "missing submodule: TaurusTLS"; exit 1; }; \
-	 fi
+	@test -f $(TAURUS)/TaurusTLS.pas || { echo "missing submodule: TaurusTLS"; exit 1; }
 	@echo "all dependencies present"
+
+test: $(TARGET)
+	AGENA_BIN=$(abspath $(TARGET)) FPC=$(FPC) python3 tests/run_tests.py
 
 clean:
 	rm -rf $(BUILDDIR)

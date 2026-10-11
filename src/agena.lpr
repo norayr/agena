@@ -3,7 +3,7 @@ program agena;
 { agena - a small Gemini server.
 
   Reads an INI file, serves a document root and runs CGI programs, over TLS
-  provided by TaurusTLS (the default) or by Indy's own OpenSSL handler. }
+  provided by TaurusTLS. }
 
 {$mode delphi}{$H+}
 
@@ -11,27 +11,21 @@ uses
   {$IFDEF UNIX}
   cthreads,
   {$ENDIF}
-  SysUtils, Classes, IdGlobal, IdSocketHandle, IdContext, IdTCPServer, IdSSL,
-  IdSSLOpenSSL, IdSSLOpenSSLHeaders, IdGemini, IdGeminiServer, AgenaConfig, AgenaLog, AgenaServer
-  {$IFDEF USE_TAURUS}
-  , TaurusTLS
-  {$ENDIF};
+  SysUtils, TaurusTLS, AgenaConfig, AgenaLog, AgenaServer;
 
-procedure ExplainMissingCertificate(const Config: TAgenaConfig);
+procedure CheckCertificateFiles(const AName, ACertFile, AKeyFile: string);
 begin
-  WriteLn('certificate not found: ', Config.CertFile);
-  WriteLn('generate one with:');
-  WriteLn('  openssl req -x509 -newkey rsa:4096 -keyout ', Config.KeyFile,
-    ' -out ', Config.CertFile, ' -days 365 -nodes -subj "/CN=localhost"');
+  if not FileExists(ACertFile) then
+    raise Exception.Create(AName + ': certificate not found: ' + ACertFile);
+  if not FileExists(AKeyFile) then
+    raise Exception.Create(AName + ': private key not found: ' + AKeyFile);
 end;
 
 var
   Config: TAgenaConfig;
   Server: TAgenaServer;
-  {$IFDEF USE_TAURUS}
   TaurusHandler: TTaurusTLSServerIOHandler;
-  {$ENDIF}
-  IndyHandler: TIdServerIOHandlerSSLOpenSSL;
+  I: Integer;
 begin
   if (ParamCount < 1) or (ParamStr(1) = '') then
   begin
@@ -41,6 +35,12 @@ begin
 
   try
     Config := LoadAgenaConfig(ParamStr(1));
+    if Length(Config.VirtualHosts) = 0 then
+      CheckCertificateFiles('server', Config.CertFile, Config.KeyFile)
+    else
+      for I := 0 to High(Config.VirtualHosts) do
+        with Config.VirtualHosts[I] do
+          CheckCertificateFiles(Hostname, CertFile, KeyFile);
   except
     on E: Exception do
     begin
@@ -49,44 +49,34 @@ begin
     end;
   end;
 
-  if not FileExists(Config.CertFile) then
-  begin
-    ExplainMissingCertificate(Config);
-    Halt(1);
-  end;
-  if not FileExists(Config.KeyFile) then
-  begin
-    WriteLn('private key not found: ', Config.KeyFile);
-    Halt(1);
-  end;
-
   Server := TAgenaServer.Create(nil);
   try
     Server.Configure(Config);
 
-{$IFDEF USE_TAURUS}
-    { TIdGeminiServer does not build a handler of its own, so this build makes
-      the one it wants and the server serves through that. }
+    { TLS, including SNI certificate selection, belongs to TaurusTLS. }
     TaurusHandler := TTaurusTLSServerIOHandler.Create(Server);
-    TaurusHandler.DefaultCert.PublicKey := Config.CertFile;
-    TaurusHandler.DefaultCert.PrivateKey := Config.KeyFile;
+    if Length(Config.VirtualHosts) = 0 then
+    begin
+      TaurusHandler.DefaultCert.PublicKey := Config.CertFile;
+      TaurusHandler.DefaultCert.PrivateKey := Config.KeyFile;
+    end
+    else
+    begin
+      TaurusHandler.DefaultCert.PublicKey := Config.VirtualHosts[0].CertFile;
+      TaurusHandler.DefaultCert.PrivateKey := Config.VirtualHosts[0].KeyFile;
+      for I := 0 to High(Config.VirtualHosts) do
+        with TaurusHandler.Certificates.AddX509File do
+        begin
+          PublicKey := Config.VirtualHosts[I].CertFile;
+          PrivateKey := Config.VirtualHosts[I].KeyFile;
+        end;
+    end;
     if Config.RequireTLS13 then
       TaurusHandler.SSLOptions.MinTLSVersion := TLSv1_3
     else
       TaurusHandler.SSLOptions.MinTLSVersion := TLSv1_2;
     Server.IOHandler := TaurusHandler;
     LogLine('TLS backend:   TaurusTLS, TLS 1.3 available');
-{$ELSE}
-    { Same here without TaurusTLS: the handler is created here rather than
-      borrowed from the server, which does not put one there. }
-    IndyHandler := TIdServerIOHandlerSSLOpenSSL.Create(Server);
-    IndyHandler.SSLOptions.Method := sslvTLSv1_2;
-    IndyHandler.SSLOptions.Mode := sslmServer;
-    IndyHandler.SSLOptions.CertFile := Config.CertFile;
-    IndyHandler.SSLOptions.KeyFile := Config.KeyFile;
-    Server.IOHandler := IndyHandler;
-    LogLine('TLS backend:   Indy OpenSSL, TLS 1.2 at most');
-{$ENDIF}
 
     Server.Listen(Config.BindAddress, Config.Port);
     LogLine('Ctrl-C to stop');

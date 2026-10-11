@@ -21,8 +21,8 @@ uses
   If the first output line is a "Content-Type: ..." header it is taken as the
   response metadata and stripped from the body; otherwise the body is used as
   is and the metadata defaults to text/gemini. }
-procedure RunAgenaCGI(AContext: TIdContext; const ADocumentRoot, ARawURL,
-  AScriptPath, AQuery: string; out Status: TGeminiStatus; out Meta: string;
+procedure RunAgenaCGI(AContext: TIdContext; const ADocumentRoot, AServerName,
+  ARawURL, AScriptPath, AQuery: string; out Status: TGeminiStatus; out Meta: string;
   var Response: TStream);
 
 implementation
@@ -50,13 +50,6 @@ begin
     Result := Result + LineEnding;
 end;
 
-function ServerNameFor(AContext: TIdContext): string;
-begin
-  Result := AContext.Binding.IP;
-  if (Result = '') or (Result = '0.0.0.0') or (Result = '::') then
-    Result := 'localhost';
-end;
-
 { Marks a temporary failure.  There is deliberately no body here: a Gemini
   response that is not 20 carries no body, and the transport drops one that is
   written, so anything worth saying goes to the log instead. }
@@ -66,8 +59,8 @@ begin
   Meta := 'text/gemini; charset=utf-8';
 end;
 
-procedure RunAgenaCGI(AContext: TIdContext; const ADocumentRoot, ARawURL,
-  AScriptPath, AQuery: string; out Status: TGeminiStatus; out Meta: string;
+procedure RunAgenaCGI(AContext: TIdContext; const ADocumentRoot, AServerName,
+  ARawURL, AScriptPath, AQuery: string; out Status: TGeminiStatus; out Meta: string;
   var Response: TStream);
 var
   Script: string;
@@ -115,7 +108,7 @@ begin
     P.Environment := TStringList.Create;
     P.Environment.Add('SERVER_PROTOCOL=GEMINI');
     P.Environment.Add('SERVER_SOFTWARE=agena');
-    P.Environment.Add('SERVER_NAME=' + ServerNameFor(AContext));
+    P.Environment.Add('SERVER_NAME=' + AServerName);
     P.Environment.Add('SERVER_PORT=' +
       IntToStr(AContext.Connection.Socket.Binding.Port));
     P.Environment.Add('REQUEST_METHOD=' +
